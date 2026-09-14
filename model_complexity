@@ -1,0 +1,9 @@
+| Metric | Value |
+| :--- | :--- |
+| **Number of Parameters** | 26.12 M |
+| **Computational Complexity** | 0.4167 TFLOPs |
+| **Memory Usage (Inference)** | 583.15 MB |
+| **Avg Inference Time** | 101.88 ms |
+| **Inference Speed** | 9.82 FPS |
+
+> **Note:** TFLOPs reflects the total Trillions of Floating-Point Operations per single forward pass. Memory usage represents the peak allocated GPU memory during inference mode.
