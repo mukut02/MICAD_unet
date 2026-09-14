@@ -1,49 +1,3 @@
-"""
-ResNet-UNet v5 — TNBC / MoNuSeg — Exact SBA-Attention + Gated Skips
-====================================================================
-This is v4 upgraded with exact Softmax SBA-Attention and enhanced 
-decoder skip connections (Phase 5).
-
-  PHASE 5 — Attention Upgrades (SBA + Decoder Skips)
-    (a) Exact Softmax SBA-Attention: Replaces the linear attention 
-        approximation from v4. Since the ASPP bottleneck operates at a 
-        low resolution (e.g., 16x16, N=256), exact O(N^2) Softmax 
-        attention is computationally trivial while offering a perfectly 
-        sharp attention distribution. Replaces explicit F.unfold window 
-        attention with a highly optimized depthwise convolution on V.
-    (b) Attention Gates (Semantic Filtering): Standard decoder skip 
-        connections pull in high-resolution background noise. Attention 
-        Gates use the semantically rich decoder features to mute 
-        background noise in the skip connection before merging.
-    (c) Boundary-Gated Skips (Structural Enhancement): Optional. Reuses 
-        the Phase 4a pre-bottleneck Scharr gate on the skip connections 
-        themselves to guarantee razor-sharp boundary features are boosted 
-        before being handed to the decoder.
-    Toggles: USE_ATTENTION_GATES, USE_BOUNDARY_SKIPS.
-
-  PHASE 1 — Instance separation (the actual bottleneck for dense nuclei).
-    Adds a HoVer-Net-style auxiliary head that regresses, per pixel, the
-    (horizontal, vertical) offset to its instance's centroid.
-    Toggle: USE_HV_HEAD.
-
-  PHASE 2 — Fixed + strengthened boundary descriptor (feeds SBA-Attention).
-    Orientation bug fix + optional Laplacian-of-Gaussian channel.
-    Toggles: USE_LOG_CHANNEL, BOUNDARY_DESC_MODE.
-
-  PHASE 3 — Direct boundary supervision.
-    Added `BoundaryConsistencyLoss`: a small, fixed-kernel Scharr edge
-    map penalized with L1.
-    Toggle: USE_BOUNDARY_LOSS.
-
-  PHASE 4 — Pre-bottleneck Scharr refinement + post-bottleneck multi-
-  scale Hessian, wired through the existing kernelized-attention.
-    Toggles: USE_PRE_BOTTLENECK_REFINE, USE_HESSIAN_CHANNELS.
-----------------------------------------------------------------------------
-"""
-
-# ─────────────────────────────────────────────────────────────────────────────
-# 0. Imports
-# ─────────────────────────────────────────────────────────────────────────────
 import os, glob, random, warnings, copy
 import numpy as np
 from pathlib import Path
@@ -63,24 +17,8 @@ from skimage.segmentation import watershed
 from skimage.morphology import erosion, disk, remove_small_objects
 from scipy import ndimage as ndi
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 1. Configuration
-# ─────────────────────────────────────────────────────────────────────────────
-
-# ---- MoNuSeg (Train/Test only) ------------------------------------------------
-MONUSEG_BASE_DIR = Path(
-    "/kaggle/input/datasets/kartikmaity/tnbc-monuseg-segmentation/"
-    "MoNuSeg_official_split/MoNuSeg"
-)
-TRAIN_IMG_DIR  = MONUSEG_BASE_DIR / "Train" / "Images"
-TRAIN_MASK_DIR = MONUSEG_BASE_DIR / "Train" / "Masks"
-TEST_IMG_DIR   = MONUSEG_BASE_DIR / "Test"  / "Images"
-TEST_MASK_DIR  = MONUSEG_BASE_DIR / "Test"  / "Masks"
-
-# ---- TNBC (Train/Validation/Test, all pre-made) -------------------------------
 TNBC_BASE_DIR = Path(
-    "/kaggle/input/datasets/kartikmaity/tnbc-monuseg-segmentation/"
-    "TNBC/TNBC/TNBC_with_split/TNBC_split"
+    ""
 )
 TNBC_TRAIN_IMG_DIR  = TNBC_BASE_DIR / "Train"      / "Images"
 TNBC_TRAIN_MASK_DIR = TNBC_BASE_DIR / "Train"      / "Masks"
@@ -91,7 +29,7 @@ TNBC_TEST_MASK_DIR  = TNBC_BASE_DIR / "Test"       / "Masks"
 
 IMG_SIZE     = 512
 BATCH_SIZE   = 4
-NUM_EPOCHS   = 500         
+NUM_EPOCHS   = 5        
 LR           = 3e-4
 WEIGHT_DECAY = 1e-4
 POS_WEIGHT_CAP = 15.0      
@@ -102,24 +40,19 @@ USE_AMP      = True
 N_FOLDS      = 5           
 SEED         = 42
 
-# --- SBA-Attention hyperparameters -----------------------------------------
 SBA_HEADS   = 4
 
-# --- Phase 5: Skip Connection and Exact Attention enhancements -------------
-USE_ATTENTION_GATES   = True   # Semantic filtering on skip connections
-USE_BOUNDARY_SKIPS    = False  # Apply Scharr gating to skip connections
+USE_ATTENTION_GATES   = True
+USE_BOUNDARY_SKIPS    = False
 
-# --- Phase 2: boundary-descriptor toggles -----------------------------------
 USE_LOG_CHANNEL      = False
 USE_HESSIAN_CHANNELS = True
 HESSIAN_SCALES       = (1, 2)      
 BOUNDARY_DESC_MODE   = "dilation"  
 SBA_K_DIM = 4 + (1 if USE_LOG_CHANNEL else 0) + (2 if USE_HESSIAN_CHANNELS else 0)
 
-# --- Phase 4: pre-bottleneck Scharr-gated refinement toggle -----------------
 USE_PRE_BOTTLENECK_REFINE = True
 
-# --- Phase 1: instance-aware HV head toggles --------------------------------
 USE_HV_HEAD            = True
 USE_CC_FALLBACK        = True   
 HV_MSE_WEIGHT           = 1.0
@@ -129,7 +62,6 @@ WATERSHED_MIN_SIZE      = 10
 WATERSHED_SEED_THRESH   = 0.4   
 WATERSHED_SEED_EROSION  = 2     
 
-# --- Phase 3: boundary-consistency loss toggles -----------------------------
 USE_BOUNDARY_LOSS    = True
 BOUNDARY_LOSS_WEIGHT = 0.15   
 BOUNDARY_LOSS_BETA   = 3.0    
@@ -140,9 +72,6 @@ random.seed(SEED); np.random.seed(SEED)
 torch.manual_seed(SEED); torch.cuda.manual_seed_all(SEED)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 2. Mask loading
-# ─────────────────────────────────────────────────────────────────────────────
 def load_mask_as_binary(path: Path) -> np.ndarray:
     arr = np.array(Image.open(path).convert("I"), dtype=np.int32)
     if arr.max() > 1:
@@ -249,9 +178,6 @@ def find_best_threshold(model, loader, device=None, thresholds=None, use_hv=USE_
     return best_thr, best_dice
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 3. Dataset
-# ─────────────────────────────────────────────────────────────────────────────
 class SegDataset(Dataset):
     MEAN = [0.485, 0.456, 0.406]
     STD  = [0.229, 0.224, 0.225]
@@ -346,9 +272,6 @@ def _worker_init_fn(worker_id):
     np.random.seed(seed)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 4. Building datasets
-# ─────────────────────────────────────────────────────────────────────────────
 def _strip_known_suffixes(stem: str) -> str:
     suffixes = ["_bin_mask", "_binary_mask", "_binary", "_bin",
                 "_mask", "_masks", "_label", "_labels", "_gt",
@@ -395,8 +318,6 @@ def gather_pairs(image_dir: Path, mask_dir: Path):
         pairs.append((ip, sorted(cands)[0]))
 
     if unmatched:
-        sample_imgs  = [p.name for p in img_paths[:5]]
-        sample_masks = [p.name for p in mask_paths[:5]]
         raise FileNotFoundError(
             f"Could not match {len(unmatched)}/{len(img_paths)} images to masks.\n"
         )
@@ -432,7 +353,7 @@ def build_train_val(train_img_dir, train_mask_dir, img_size,
 
     train_ds = sub(tr_idx, aug=True)
     val_ds   = sub(vl_idx, aug=False)
-    print(f"  Train pool split  →  train: {len(train_ds)} | val: {len(val_ds)}")
+    print(f"  Train pool split  ->  train: {len(train_ds)} | val: {len(val_ds)}")
     return train_ds, val_ds
 
 
@@ -441,7 +362,7 @@ def build_test(test_img_dir, test_mask_dir, img_size):
     imgs  = [p[0] for p in pairs]
     masks = [p[1] for p in pairs]
     ds = SegDataset(imgs, masks, img_size=img_size, augment=False)
-    print(f"  Official test set  →  {len(ds)} images")
+    print(f"  Official test set  ->  {len(ds)} images")
     return ds
 
 
@@ -462,7 +383,7 @@ def build_official_split(train_img_dir, train_mask_dir,
     val_ds   = to_dataset(val_pairs,   augment=False)
     test_ds  = to_dataset(test_pairs,  augment=False)
 
-    print(f"  Official TNBC split  →  train: {len(train_ds)} | "
+    print(f"  Official TNBC split  ->  train: {len(train_ds)} | "
           f"val: {len(val_ds)} | test: {len(test_ds)}")
 
     return train_ds, val_ds, test_ds
@@ -477,9 +398,6 @@ def fg_weighted_sampler(dataset: SegDataset):
     return WeightedRandomSampler(weights, num_samples=len(weights), replacement=True)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 5. Model building blocks
-# ─────────────────────────────────────────────────────────────────────────────
 class ResBlock(nn.Module):
     def __init__(self, in_ch, out_ch, stride=1):
         super().__init__()
@@ -538,9 +456,6 @@ class ASPPBottleneck(nn.Module):
         feats.append(gap)
         return self.proj(torch.cat(feats, 1))
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 5b. Boundary Descriptors and Exact Attention (Phase 5)
-# ─────────────────────────────────────────────────────────────────────────────
 class ScharrBoundaryDescriptor(nn.Module):
     def __init__(self, in_ch, beta_init=1.0, k_dim=SBA_K_DIM,
                  use_log_channel=USE_LOG_CHANNEL,
@@ -693,12 +608,6 @@ class ScharrPreBottleneckRefine(nn.Module):
 
 
 class SBAAttention(nn.Module):
-    """
-    Phase 5: Exact Softmax SBA-Attention.
-    Calculates standard visual similarity (Q * K^T) and adds explicit 
-    boundary similarity (Psi * Psi^T) prior to the exact Softmax. 
-    Replaces F.unfold window attention with a depthwise conv local bias.
-    """
     def __init__(self, channels, heads=SBA_HEADS, k_dim=SBA_K_DIM,
                  use_log_channel=USE_LOG_CHANNEL, use_hessian_channels=USE_HESSIAN_CHANNELS,
                  multiscale_mode=BOUNDARY_DESC_MODE, hessian_scales=HESSIAN_SCALES):
@@ -712,7 +621,6 @@ class SBAAttention(nn.Module):
         self.k_proj   = nn.Conv2d(channels, channels, 1, bias=False)
         self.v_proj   = nn.Conv2d(channels, channels, 1, bias=False)
         
-        # Replaces explicit F.unfold local window attention 
         self.v_local  = nn.Conv2d(channels, channels, 3, padding=1, groups=channels, bias=False)
         
         self.out_proj = nn.Conv2d(channels, channels, 1, bias=False)
@@ -742,7 +650,6 @@ class SBAAttention(nn.Module):
         psi = self.boundary(xn) 
         psi_flat = psi.view(B, self.k_dim, N)
 
-        # --- FLOAT32 GUARD ---
         with torch.autocast(device_type=x.device.type, enabled=False):
             q32, k32, psi32 = q.float(), k.float(), psi_flat.float()
             
@@ -765,9 +672,6 @@ class SBAAttention(nn.Module):
         return residual + out
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 5c. Enhanced Decoder with Attention Gates
-# ─────────────────────────────────────────────────────────────────────────────
 class AttentionGate(nn.Module):
     def __init__(self, skip_ch, dec_ch, inter_ch=None):
         super().__init__()
@@ -882,7 +786,7 @@ def aggregated_jaccard_index(gt_inst: np.ndarray, pred_inst: np.ndarray) -> floa
     return inter_sum / union_sum if union_sum > 0 else 1.0
 
 
-class ResNetUNetV5(nn.Module):
+class BISON(nn.Module):
     def __init__(self, in_ch=3, use_hv_head=USE_HV_HEAD):
         super().__init__()
         self.use_hv_head = use_hv_head
@@ -898,10 +802,8 @@ class ResNetUNetV5(nn.Module):
 
         self.bottleneck = ASPPBottleneck(512, rates=(3, 6, 12))
         
-        # Phase 5: Replaced SBALinearAttention with exact Softmax SBAAttention
         self.sba = SBAAttention(512, heads=SBA_HEADS, k_dim=SBA_K_DIM)
 
-        # Phase 5: Enhanced Decoders
         self.dec4 = DecoderBlock(512, 512, 256, n=2, use_ag=USE_ATTENTION_GATES, use_boundary_gate=USE_BOUNDARY_SKIPS)
         self.dec3 = DecoderBlock(256, 256, 128, n=2, use_ag=USE_ATTENTION_GATES, use_boundary_gate=USE_BOUNDARY_SKIPS)
         self.dec2 = DecoderBlock(128, 128, 64,  n=2, use_ag=USE_ATTENTION_GATES, use_boundary_gate=USE_BOUNDARY_SKIPS)
@@ -954,9 +856,6 @@ class ResNetUNetV5(nn.Module):
         return {"seg": out, "hv": hv_out}
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 6. Losses
-# ─────────────────────────────────────────────────────────────────────────────
 class FocalTverskyLoss(nn.Module):
     def __init__(self, alpha=0.7, beta=0.3, gamma=0.75,
                  bce_weight=0.4, pos_weight=5.0, smooth=1.0):
@@ -1082,9 +981,6 @@ class CombinedLoss(nn.Module):
         return loss, components
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 7. Metrics
-# ─────────────────────────────────────────────────────────────────────────────
 class SegMetrics:
     def __init__(self, thr=0.5): self.thr = thr; self.reset()
     def reset(self): self.tp = self.fp = self.fn = self.tn = 0.0
@@ -1135,9 +1031,6 @@ class InstanceMetrics:
         }
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 8. EMA (warmup decay)
-# ─────────────────────────────────────────────────────────────────────────────
 class ModelEMA:
     def __init__(self, model, decay=EMA_DECAY, warmup=True):
         self.module = copy.deepcopy(model).eval()
@@ -1161,9 +1054,6 @@ class ModelEMA:
                 v.copy_(msd[k])
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 9. Training loop
-# ─────────────────────────────────────────────────────────────────────────────
 def run_epoch(model, loader, criterion, metrics, optimizer=None, scheduler=None,
               scaler=None, ema=None, device=DEVICE, phase="train", verbose=True):
     is_train = (phase == "train")
@@ -1241,9 +1131,6 @@ def evaluate(model, loader, metrics, device=DEVICE, verbose=True,
     return metrics.compute()
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 10a. MoNuSeg entry point 
-# ─────────────────────────────────────────────────────────────────────────────
 def resolve_dir(d: Path, label: str):
     d = Path(d)
     if not d.exists():
@@ -1261,11 +1148,11 @@ def train(train_img_dir=TRAIN_IMG_DIR, train_mask_dir=TRAIN_MASK_DIR,
                       (test_img_dir, "test images"), (test_mask_dir, "test masks")]:
         resolve_dir(d, label)
 
-    print(f"\n{'='*62}\n  ResNet-UNet v5  |  MoNuSeg official split (Train/Test)")
+    print(f"\n{'='*62}\n  BISON  |  MoNuSeg official split (Train/Test)")
     print(f"  Device : {DEVICE}  |  img_size={img_size}  batch={batch_size}")
-    print(f"  Epochs : {num_epochs}  (no early stopping — full run every time)")
+    print(f"  Epochs : {num_epochs}  ")
     print(f"  Phase5 : attention_gates={USE_ATTENTION_GATES}  boundary_skips={USE_BOUNDARY_SKIPS}")
-    print(f"  SBA    : heads={SBA_HEADS}  k_dim={SBA_K_DIM}  (Exact Softmax, No Linear Approx)  "
+    print(f"  SBA    : heads={SBA_HEADS}  k_dim={SBA_K_DIM}  "
           f"desc_mode={BOUNDARY_DESC_MODE}  log_channel={USE_LOG_CHANNEL}  "
           f"hessian_channels={USE_HESSIAN_CHANNELS}")
     print(f"  Phase1 : HV head={USE_HV_HEAD}  cc_fallback={USE_CC_FALLBACK}")
@@ -1295,9 +1182,6 @@ def train(train_img_dir=TRAIN_IMG_DIR, train_mask_dir=TRAIN_MASK_DIR,
     return model, history, te
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 10b. TNBC entry point
-# ─────────────────────────────────────────────────────────────────────────────
 def train_official_split(train_img_dir=TNBC_TRAIN_IMG_DIR, train_mask_dir=TNBC_TRAIN_MASK_DIR,
                           val_img_dir=TNBC_VAL_IMG_DIR,     val_mask_dir=TNBC_VAL_MASK_DIR,
                           test_img_dir=TNBC_TEST_IMG_DIR,   test_mask_dir=TNBC_TEST_MASK_DIR,
@@ -1305,10 +1189,10 @@ def train_official_split(train_img_dir=TNBC_TRAIN_IMG_DIR, train_mask_dir=TNBC_T
                           lr=LR, weight_decay=WEIGHT_DECAY,
                           use_weighted_sampler=False, checkpoint="best_model_v5_tnbc.pth",
                           seed=SEED):
-    print(f"\n{'='*62}\n  ResNet-UNet v5  |  TNBC official Train/Validation/Test split")
+    print(f"\n{'='*62}\n  BISON  |  TNBC official Train/Validation/Test split")
     print(f"  Device : {DEVICE}  |  img_size={img_size}  batch={batch_size}")
     print(f"  Phase5 : attention_gates={USE_ATTENTION_GATES}  boundary_skips={USE_BOUNDARY_SKIPS}")
-    print(f"  SBA    : heads={SBA_HEADS}  k_dim={SBA_K_DIM}  (Exact Softmax, No Linear Approx)  "
+    print(f"  SBA    : heads={SBA_HEADS}  k_dim={SBA_K_DIM}  "
           f"desc_mode={BOUNDARY_DESC_MODE}  log_channel={USE_LOG_CHANNEL}  "
           f"hessian_channels={USE_HESSIAN_CHANNELS}")
     print(f"{'='*62}")
@@ -1337,14 +1221,11 @@ def train_official_split(train_img_dir=TNBC_TRAIN_IMG_DIR, train_mask_dir=TNBC_T
     return model, history, te
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 10c. Shared training loop body
-# ─────────────────────────────────────────────────────────────────────────────
 def _run_training_loop(train_loader, val_loader, test_loader, train_ds,
                         num_epochs, lr, weight_decay, checkpoint, header):
     pos_weight = compute_pos_weight(train_ds.masks)
 
-    model     = ResNetUNetV5(use_hv_head=USE_HV_HEAD).to(DEVICE)
+    model     = BISON(use_hv_head=USE_HV_HEAD).to(DEVICE)
     ema       = ModelEMA(model, decay=EMA_DECAY, warmup=True)
     criterion = CombinedLoss(pos_weight, use_hv=USE_HV_HEAD, use_boundary=USE_BOUNDARY_LOSS).to(DEVICE)
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
@@ -1381,7 +1262,7 @@ def _run_training_loop(train_loader, val_loader, test_loader, train_ds,
                        checkpoint)
             print(f"  ✓ Saved EMA checkpoint  (val Dice = {best_dice:.4f})")
 
-    print(f"\nLoading best EMA checkpoint ({checkpoint}) for test …")
+    print(f"\nLoading best EMA checkpoint ({checkpoint}) for test ...")
     ckpt = torch.load(checkpoint, map_location=DEVICE)
     model.load_state_dict(ckpt["state"])
 
