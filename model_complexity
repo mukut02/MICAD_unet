@@ -2,7 +2,7 @@
 | :--- | :--- |
 | **Number of Parameters** | 26.12 M |
 | **Computational Complexity** | 0.4167 TFLOPs |
-| **Memory Usage (Inference)** | 583.15 MB |
+| **Memory Usage (Inference)** | 2.4 GB |
 | **Avg Inference Time** | 101.88 ms |
 | **Inference Speed** | 9.82 FPS |
 
