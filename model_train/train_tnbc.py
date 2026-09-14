@@ -29,7 +29,7 @@ TNBC_TEST_MASK_DIR  = TNBC_BASE_DIR / "Test"       / "Masks"
 
 IMG_SIZE     = 512
 BATCH_SIZE   = 4
-NUM_EPOCHS   = 5        
+NUM_EPOCHS   = 500        
 LR           = 3e-4
 WEIGHT_DECAY = 1e-4
 POS_WEIGHT_CAP = 15.0      
