@@ -1,4 +1,3 @@
-\# BISON: Boundary-Injected Segmentation of Nuclei via Exact Softmax Attention
 
 <p align="center">
   <a href="http://www.micad.org/"><img src="https://img.shields.io/badge/Conference-MICAD%202026-0052cc.svg?style=flat&logo=target" alt="MICAD 2026"></a>
