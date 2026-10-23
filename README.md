@@ -1,7 +1,14 @@
+<div align="center">
+
+# **BISON: Boundary-Injected Segmentation of Nuclei via Exact Softmax Attention**
+
+### **7th International Conference on Medical Imaging and Computer-Aided Diagnosis (MICAD 2026)**
+#### **Oral Presentation &bull; Paper ID: 740 &bull; Springer LNEE Series**
+
+</div>
 
 <p align="center">
   <a href="http://www.micad.org/"><img src="https://img.shields.io/badge/Conference-MICAD%202026-0052cc.svg?style=flat&logo=target" alt="MICAD 2026"></a>
-  <a href="http://www.micad.org/"><img src="https://img.shields.io/badge/Presentation-Oral%20(Paper%20ID%20740)-FF6F00.svg?style=flat" alt="Oral Presentation"></a>
   <a href="https://www.springer.com/series/7818"><img src="https://img.shields.io/badge/Springer-LNEE%20Series-003366.svg?style=flat" alt="Springer LNEE"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-green.svg?style=flat" alt="License: MIT"></a>
   <a href="https://pytorch.org/"><img src="https://img.shields.io/badge/PyTorch-2.0%2B-EE4C2C.svg?style=flat&logo=pytorch" alt="PyTorch"></a>
